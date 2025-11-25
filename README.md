@@ -771,7 +771,7 @@ if __name__ == '__main__':
     main()
 ```
 
-## Sample Run
+## Sample Run (RX 7900 XT with ROCm on Windows 11 Pro)
 
 ```
 ======================================================================
