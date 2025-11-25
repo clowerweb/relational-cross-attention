@@ -1184,7 +1184,7 @@ EXPERIMENT COMPLETE
 ======================================================================
 ```
 
-## Sample ARC-AGI Run (15 epochs, 7M params, batch size 3, effective bath 12)
+## Sample ARC-AGI Run (15 epochs, 7M params, batch size 3, effective batch 12)
 
 ```
 Epoch    Train Acc    Eval Cell    Eval Task   
