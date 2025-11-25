@@ -1045,7 +1045,7 @@ if __name__ == '__main__':
     main()
 ```
 
-## Sample Run (RX 7900 XT with ROCm on Windows 11 Pro)
+## Sample Synthetic Run (RX 7900 XT with ROCm on Windows 11 Pro)
 
 ```
 ======================================================================
@@ -1183,3 +1183,23 @@ translate_down       9.95         16.20        +6.25
 EXPERIMENT COMPLETE
 ======================================================================
 ```
+
+## Sample ARC-AGI Run (15 epochs, 7M params, batch size 3, effective bath 12)
+
+```
+Epoch    Train Acc    Eval Cell    Eval Task   
+----------------------------------------------------------------------
+1        63.1         61.3         2.5         
+5        69.6         64.9         2.8         
+10       71.7         62.4         2.2         
+15       72.3         61.2         2.2         
+
+======================================================================
+FINAL RESULTS
+======================================================================
+  Cell Accuracy: 61.21%
+  Task Accuracy: 2.25% (9/400 tasks)
+======================================================================
+```
+
+The model starts sliding backwards after the 5th epoch likely due to overfitting (model too small). I don't currently have the hardware to run this test with a larger model size, but I'd love to see results from someone who can!
