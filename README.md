@@ -1,4 +1,46 @@
-## Full README soon!
+# Relational Cross-Attention
+
+A novel neural architecture for few-shot learning of transformations that outperforms standard transformers by **30% relative improvement** while being **17% faster**.
+
+## Key Results
+
+| Model | Unseen Accuracy | Speed | Gap vs Standard |
+|-------|----------------|-------|-----------------|
+| **Relational (Ours)** | **16.12%** | **24.8s** | **+3.76%** |
+| Standard Transformer | 12.36% | 29.7s | baseline |
+
+### Per-Transform Breakdown (Unseen)
+
+| Transform | Standard | Relational | Improvement |
+|-----------|----------|------------|-------------|
+| flip_vertical | 10.14% | **16.12%** | +5.98% |
+| rotate_180 | 10.33% | **15.91%** | +5.58% |
+| translate_down | 9.95% | **16.20%** | +6.25% |
+| invert_colors | 20.07% | **20.35%** | +0.28% |
+
+**The relational model excels at spatial reasoning while maintaining strong color transform performance.**
+
+### Key Innovations
+
+1. **Cross-Attention for Relational Reasoning**
+   - Learns explicit input→output mappings for each example
+   - Averages mappings across examples to extract the transformation rule
+   - Applies learned rule to test input
+
+2. **Dual Prediction Heads**
+   - **Spatial Head**: Uses attended embeddings (good for geometric transforms)
+   - **Color Head**: Uses attended embeddings + one-hot colors (good for color transforms)
+   - Prevents task interference through architectural separation
+
+3. **Learned Gating**
+   - 2-way softmax gate learns which head to trust for each position
+   - Automatically discovers spatial→spatial_head, color→color_head routing
+   - Enables best-of-both-worlds performance
+
+**Requirements:**
+- Python 3.8+
+- PyTorch 2.0+
+- CUDA or ROCm-capable GPU (optional, but recommended)
 
 Code to hold you over:
 
