@@ -31,6 +31,8 @@ from typing import Tuple, Optional, List, Dict
 import random
 import math
 from datetime import datetime
+import json
+from glob import glob
 
 # =============================================================================
 # GPU Detection and Setup
@@ -166,6 +168,123 @@ def collate_arc_episodes(batch: List[Dict]) -> Dict:
         'test_input': torch.stack([b['test_input'] for b in batch]),            # (B, H, W)
         'test_output': torch.stack([b['test_output'] for b in batch]),          # (B, H, W)
         'transforms': [b['transform'] for b in batch]
+    }
+
+
+class ARCDataset(Dataset):
+    """
+    Real ARC dataset loader.
+
+    Each task has multiple train examples and one or more test examples.
+    We treat each task as one episode (like our synthetic data).
+    """
+
+    def __init__(self, data_dir: str, split: str = 'training', max_grid_size: int = 30):
+        """
+        Args:
+            data_dir: Path to ARC-AGI/data folder
+            split: 'training' or 'evaluation'
+            max_grid_size: Pad/crop grids to this size
+        """
+        self.max_grid_size = max_grid_size
+        self.tasks = []
+
+        pattern = f"{data_dir}/{split}/*.json"
+        for filepath in sorted(glob(pattern)):
+            with open(filepath) as f:
+                task = json.load(f)
+                task['filename'] = filepath.split('\\')[-1].split('/')[-1]  # Handle both Windows and Unix
+                self.tasks.append(task)
+
+        if len(self.tasks) == 0:
+            raise ValueError(f"No tasks found at {pattern}")
+
+        print(f"Loaded {len(self.tasks)} ARC tasks from {split}")
+
+    def __len__(self):
+        return len(self.tasks)
+
+    def pad_grid(self, grid: List[List[int]]) -> torch.Tensor:
+        """Pad grid to max_grid_size x max_grid_size."""
+        h, w = len(grid), len(grid[0]) if grid else 0
+        padded = torch.zeros(self.max_grid_size, self.max_grid_size, dtype=torch.long)
+
+        # Copy grid into top-left corner
+        for i in range(min(h, self.max_grid_size)):
+            for j in range(min(w, self.max_grid_size)):
+                padded[i, j] = grid[i][j]
+
+        return padded
+
+    def __getitem__(self, idx):
+        task = self.tasks[idx]
+
+        # Get train examples (use as our "examples")
+        train_examples = task['train']
+
+        # Get test example (use first one)
+        test_example = task['test'][0]
+
+        # Convert to tensors
+        example_inputs = []
+        example_outputs = []
+
+        for ex in train_examples:
+            example_inputs.append(self.pad_grid(ex['input']))
+            example_outputs.append(self.pad_grid(ex['output']))
+
+        test_input = self.pad_grid(test_example['input'])
+        test_output = self.pad_grid(test_example['output'])
+
+        # Create mask for actual grid content (not padding)
+        h, w = len(test_example['input']), len(test_example['input'][0])
+        mask = torch.zeros(self.max_grid_size, self.max_grid_size, dtype=torch.bool)
+        mask[:h, :w] = True  # True for real cells, False for padding
+
+        return {
+            'example_inputs': torch.stack(example_inputs),    # (N, H, W)
+            'example_outputs': torch.stack(example_outputs),  # (N, H, W)
+            'test_input': test_input,                          # (H, W)
+            'test_output': test_output,                        # (H, W)
+            'mask': mask,                                      # (H, W) - True for real cells
+            'task_id': task['filename'],
+            'num_examples': len(train_examples),
+            'original_size': (h, w)
+        }
+
+
+def collate_arc_tasks(batch: List[Dict]) -> Dict:
+    """
+    Custom collate that handles variable numbers of examples per task.
+    Pads to max examples in batch.
+    """
+    max_examples = max(b['num_examples'] for b in batch)
+
+    example_inputs = []
+    example_outputs = []
+
+    for b in batch:
+        n = b['num_examples']
+        inp = b['example_inputs']  # (N, H, W)
+        out = b['example_outputs']
+
+        # Pad to max_examples by repeating last example
+        if n < max_examples:
+            pad_inp = inp[-1:].repeat(max_examples - n, 1, 1)
+            pad_out = out[-1:].repeat(max_examples - n, 1, 1)
+            inp = torch.cat([inp, pad_inp], dim=0)
+            out = torch.cat([out, pad_out], dim=0)
+
+        example_inputs.append(inp)
+        example_outputs.append(out)
+
+    return {
+        'example_inputs': torch.stack(example_inputs),      # (B, max_N, H, W)
+        'example_outputs': torch.stack(example_outputs),    # (B, max_N, H, W)
+        'test_input': torch.stack([b['test_input'] for b in batch]),
+        'test_output': torch.stack([b['test_output'] for b in batch]),
+        'mask': torch.stack([b['mask'] for b in batch]),
+        'task_ids': [b['task_id'] for b in batch]
     }
 
 
@@ -630,6 +749,148 @@ def run_experiment(seed: int,
     }
 
 
+def run_arc_experiment(data_dir: str, epochs: int = 30, device: torch.device = None,
+                       low_memory: bool = True):
+    """
+    Train on ARC training set, evaluate on ARC evaluation set.
+
+    Args:
+        low_memory: If True, use memory-efficient settings (smaller batch, gradient accumulation)
+    """
+    import time
+
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    print("=" * 70)
+    print("REAL ARC EXPERIMENT")
+    print("=" * 70)
+    print()
+
+    # Memory-efficient settings
+    if low_memory:
+        batch_size = 3
+        accumulation_steps = 4  # Effective batch size = 3 * 4 = 12
+        print("⚡ Low-memory mode enabled:")
+        print(f"   Batch size: {batch_size}")
+        print(f"   Gradient accumulation: {accumulation_steps} steps")
+        print(f"   Effective batch size: {batch_size * accumulation_steps}")
+        print()
+    else:
+        batch_size = 8
+        accumulation_steps = 1
+
+    # Load datasets
+    train_dataset = ARCDataset(data_dir, split='training', max_grid_size=30)
+    eval_dataset = ARCDataset(data_dir, split='evaluation', max_grid_size=30)
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_arc_tasks)
+    eval_loader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_arc_tasks)
+
+    # Create model (larger for real ARC)
+    model = ARCReasonerRelational(
+        embed_dim=256,
+        num_layers=6,
+        num_heads=8,
+        num_colors=10,
+        max_grid_size=30
+    ).to(device)
+
+    print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+    print()
+
+    optimizer = optim.AdamW(model.parameters(), lr=1e-4)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+
+    # Training loop
+    print(f"{'Epoch':<8} {'Train Acc':<12} {'Eval Cell':<12} {'Eval Task':<12}")
+    print("-" * 70)
+
+    for epoch in range(epochs):
+        model.train()
+        total_loss = 0
+        total_correct = 0
+        total_cells = 0
+
+        optimizer.zero_grad()
+        for batch_idx, batch in enumerate(train_loader):
+            example_inputs = batch['example_inputs'].to(device)
+            example_outputs = batch['example_outputs'].to(device)
+            test_input = batch['test_input'].to(device)
+            test_output = batch['test_output'].to(device)
+            mask = batch['mask'].to(device)
+            B = example_inputs.shape[0]
+
+            logits = model(example_inputs, example_outputs, test_input)
+
+            # Flatten logits and targets, but filter by mask
+            # logits: (B, H, W, C) -> logits[mask]: (N_valid_pixels, C)
+            active_logits = logits[mask]
+            active_targets = test_output[mask]
+
+            loss = F.cross_entropy(active_logits, active_targets)
+
+            # Scale loss for gradient accumulation
+            loss = loss / accumulation_steps
+            loss.backward()
+
+            # Update weights every accumulation_steps
+            if (batch_idx + 1) % accumulation_steps == 0:
+                optimizer.step()
+                optimizer.zero_grad()
+
+            total_loss += loss.item() * B * accumulation_steps
+            predictions = logits.argmax(dim=-1)
+            total_correct += (predictions[mask] == test_output[mask]).sum().item()
+            total_cells += mask.sum().item()
+
+        scheduler.step()
+        train_acc = total_correct / total_cells
+
+        # Evaluate every 5 epochs
+        if (epoch + 1) % 5 == 0 or epoch == 0:
+            model.eval()
+            eval_correct = 0
+            eval_cells = 0
+            task_correct = 0
+            task_total = 0
+
+            with torch.no_grad():
+                for batch in eval_loader:
+                    example_inputs = batch['example_inputs'].to(device)
+                    example_outputs = batch['example_outputs'].to(device)
+                    test_input = batch['test_input'].to(device)
+                    test_output = batch['test_output'].to(device)
+
+                    mask = batch['mask'].to(device) # Get mask
+                    logits = model(example_inputs, example_outputs, test_input)
+                    predictions = logits.argmax(dim=-1)
+
+                    # Cell accuracy
+                    eval_correct += (predictions[mask] == test_output[mask]).sum().item()
+                    eval_cells += mask.sum().item()
+
+                    # Task accuracy (100% of cells correct)
+                    for i in range(predictions.shape[0]):
+                        # Extract valid region for this specific example
+                        m = mask[i]
+                        if torch.equal(predictions[i][m], test_output[i][m]):
+                            task_correct += 1
+                        task_total += 1
+
+            eval_acc = eval_correct / eval_cells
+            task_acc = task_correct / task_total
+
+            print(f"{epoch+1:<8} {100*train_acc:<12.1f} {100*eval_acc:<12.1f} {100*task_acc:<12.1f}")
+
+    print("\n" + "=" * 70)
+    print("FINAL RESULTS")
+    print("=" * 70)
+    print(f"  Cell Accuracy: {100*eval_acc:.2f}%")
+    print(f"  Task Accuracy: {100*task_acc:.2f}% ({task_correct}/{task_total} tasks)")
+    print("=" * 70)
+
+
 # =============================================================================
 # Main Entry Point
 # =============================================================================
@@ -650,6 +911,19 @@ def main():
     print("Relational Cross-Attention Experiment")
     print("=" * 70)
     print()
+    print("Choose experiment:")
+    print("  1. Synthetic ARC-lite (default)")
+    print("  2. Real ARC dataset")
+    print()
+
+    choice = input("Enter choice [1]: ").strip() or "1"
+    print()
+
+    if choice == "2":
+        data_dir = input("Enter path to ARC-AGI/data folder: ").strip()
+        epochs = input("Enter number of epochs [50]: ").strip() or "50"
+        run_arc_experiment(data_dir, epochs=int(epochs), device=device)
+        return
 
     # Experiment configuration - testing both spatial AND color transforms
     train_transforms = ['rotate_90', 'flip_horizontal', 'translate_right', 'increment_colors']
