@@ -181,7 +181,10 @@ git clone https://github.com/fchollet/ARC-AGI.git
 py main.py # Select option 2
 ```
 
-## Sample ARC-AGI Run (15 epochs, 7M params, batch size 3, effective batch 12)
+### Preliminary note on ARC results.
+The ARC-AGI scores reported are preliminary. During these runs the model was trained only on the following transformations: `rotate_90`, `flip_horizontal`, `translate_right`, and `increment_colors`. Consequently, the model has no explicit experience of other transform families (e.g., diagonal rotations, scale changes, certain composite transforms), which limits zero-shot generalization to those unseen transforms. The reported cell/task accuracies should therefore be interpreted as evidence of inductive bias toward relational structure under a constrained training regime, not as comprehensive ARC performance. We include per-transform breakdowns and multiple seeds to clarify where the model generalizes and where it does not.
+
+### Sample ARC-AGI Run (15 epochs, 7M params, batch size 3, effective batch 12)
 
 ```
 Epoch    Train Acc    Eval Cell    Eval Task   
